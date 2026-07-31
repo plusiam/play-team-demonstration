@@ -92,6 +92,28 @@
   .choice[aria-pressed="true"] small { color: #cbb87c; }
   .team-inputs { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
 
+  /* ===== 내 조건문 ===== */
+  .pool-note { color: var(--dim); font-size: 0.92rem; margin-top: 12px; line-height: 1.6; }
+  .pool-note.warn { color: var(--accent); }
+  .prompt-list { margin: 14px 0 0; display: flex; flex-direction: column; gap: 8px; }
+  .prompt-item {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 10px 14px;
+  }
+  .prompt-item .tag {
+    flex: 0 0 auto; font-size: 0.8rem; font-weight: 700; color: var(--accent-2);
+    border: 1px solid var(--accent-2); border-radius: 999px; padding: 0.15em 0.7em;
+  }
+  .prompt-item .t { flex: 1 1 180px; font-weight: 600; word-break: keep-all; }
+  .prompt-item .cnt { color: var(--dim); font-size: 0.88rem; }
+  .prompt-item button { padding: 0.4em 0.8em; font-size: 0.88rem; }
+  .editor { margin-top: 14px; border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px; }
+  .editor .row { margin-bottom: 12px; }
+  .editor .row:last-child { margin-bottom: 0; }
+  .editor .hint { color: var(--dim); font-size: 0.85rem; margin-top: 6px; line-height: 1.6; }
+  .editor .choice { padding: 0.5em 1em; font-size: 0.95rem; }
+
   /* ===== 진행 화면 ===== */
   .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
   .progress-label { font-size: clamp(1rem, 1.6vw, 1.5rem); font-weight: 700; color: var(--dim); }
@@ -220,6 +242,13 @@
     <div class="card">
       <h2>칸 수</h2>
       <div class="choice-row" id="cellRow"></div>
+    </div>
+
+    <div class="card">
+      <h2>조건문</h2>
+      <div class="choice-row" id="sourceRow"></div>
+      <div class="pool-note" id="poolNote"></div>
+      <div id="customArea"></div>
     </div>
 
     <div class="controls">
@@ -366,6 +395,11 @@ let state = null;
 let selected = new Set();   // 지금 고른 모둠
 let lastPoints = 50;        // 점수 최근 사용값
 
+/* 교사가 만든 조건문 — 판(state)과 따로 산다 */
+let customPrompts = loadCustom();
+let source = 'preset';      // preset | custom | mix
+let editing = null;         // 편집 중인 조건문 id, 새로 만들면 'new'
+
 function newState(teamNames, cells) {
   return {
     teams: teamNames.map((n, i) => ({ id: 't' + (i + 1), name: n })),
@@ -377,15 +411,44 @@ function newState(teamNames, cells) {
   };
 }
 
+/* 어느 조건문 꾸러미에서 뽑을지 — 프리셋 / 내 조건 / 섞어서 */
+function poolFor() {
+  if (source === 'custom') return customPrompts;
+  if (source === 'mix') return PRESETS.concat(customPrompts);
+  return PRESETS;
+}
+
 /* 칸 수만큼 뽑되 세트 배분표를 지킨다. 섞기는 세트 안에서만 돈다. */
 function pickPrompts(cells) {
   const quota = QUOTAS[cells];
-  const out = [];
-  SET_ORDER.forEach(setName => {
-    const pool = PRESETS.filter(p => p.set === setName);
-    out.push(...shuffle(pool).slice(0, quota[setName]));
-  });
-  return JSON.parse(JSON.stringify(out));   // 직접 채점으로 정답지가 바뀌므로 깊은 복사
+  const bySet = {};
+  SET_ORDER.forEach(s => bySet[s] = shuffle(poolFor().filter(p => p.set === s)));
+
+  // 1차 — 배분표대로 세트별로 뽑는다
+  const picked = [];
+  SET_ORDER.forEach(s => picked.push(...bySet[s].splice(0, quota[s])));
+
+  // 2차 — 어느 세트가 모자라면 남은 조건문으로 칸을 채운다.
+  // (내 조건문이 한쪽 세트에 몰려 있을 때를 위한 보완)
+  const rest = shuffle(SET_ORDER.flatMap(s => bySet[s]));
+  while (picked.length < cells && rest.length) picked.push(rest.shift());
+
+  // 세트 순서(몸풀기 → 몸 → 다문화)는 끝까지 지킨다. sort가 안정적이라 세트 안 섞기는 살아남는다.
+  picked.sort((a, b) => SET_ORDER.indexOf(a.set) - SET_ORDER.indexOf(b.set));
+  return JSON.parse(JSON.stringify(picked));   // 직접 채점으로 정답지가 바뀌므로 깊은 복사
+}
+
+/* ---- 내 조건문 : 판과 따로 저장한다. 「새 판」을 눌러도 지워지지 않는다 ---- */
+const CUSTOM_KEY = 'team-demo-custom';
+
+function loadCustom() {
+  try {
+    const a = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(p => p && p.text && SET_ORDER.includes(p.set)) : [];
+  } catch (e) { return []; }
+}
+function saveCustom() {
+  try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(customPrompts)); } catch (e) {}
 }
 
 function shuffle(arr) {
@@ -664,7 +727,8 @@ $('btnBack').addEventListener('click', () => { renderPlay(); show('play'); });
 
 /* 새 판 시작 — 1교시 3반 → 2교시 4반이 기본 상황이라 반드시 필요하다 */
 function resetAll() {
-  if (!confirm('지금까지의 점수가 모두 지워집니다. 새 판을 시작할까요?')) return;
+  // 내 조건문(CUSTOM_KEY)은 건드리지 않는다. 점수만 지운다.
+  if (!confirm('지금까지의 점수가 모두 지워집니다. (내가 만든 조건문은 그대로 남습니다)\n새 판을 시작할까요?')) return;
   state = null;
   clearSaved();
   selected.clear();
@@ -683,8 +747,30 @@ let setupCells = 6;                     // 기본 6칸 — 40분 한 차시에 �
 let setupNames = [];
 
 const CELL_INFO = { 4: '10~14분', 6: '15~21분 · 기본', 8: '20~28분' };
+const SOURCE_LABEL = { preset: '기본 조건문', custom: '내 조건문', mix: '섞어서' };
+const SET_HELP = {
+  '몸풀기': '답이 넘쳐서 아무도 빈칸으로 남지 않는다. 앞쪽 칸에 놓인다.',
+  '몸':     '글자를 못 써도 그리거나 흉내 내서 낼 수 있다. 가운데 칸에 놓인다.',
+  '다문화': '한국에서 나고 자란 아이에게 유리하지 않은 답. 뒤쪽 칸에 놓인다.'
+};
 
-function renderSetup() {
+let draft = null;   // 편집 중인 입력값 — 다시 그려도 타이핑이 날아가지 않게 들고 있는다
+
+function syncDraft() {
+  if (!draft || !$('edText')) return;
+  draft.text = $('edText').value;
+  draft.a30 = $('ed30').value;
+  draft.a50 = $('ed50').value;
+  draft.a100 = $('ed100').value;
+}
+
+/* keepTyping=false 로 부르면 화면의 입력값을 draft로 되읽지 않는다.
+   draft를 방금 새로 채워 넣은 경우(새로 만들기·고치기)에 쓴다.
+   그렇지 않으면 아직 남아 있는 옛 편집기 DOM이 새 draft를 덮어쓴다. */
+function renderSetup(keepTyping = true) {
+  if (keepTyping) syncDraft();
+  readNames();          // 다시 그리기 전에 지금 적힌 모둠 이름을 챙긴다
+
   $('teamCountRow').innerHTML = [2,3,4,5,6,7,8].map(n =>
     `<button class="choice" aria-pressed="${n === setupTeamCount}" data-tc="${n}">${n}모둠</button>`
   ).join('');
@@ -697,8 +783,137 @@ function renderSetup() {
     `<input type="text" data-name="${i}" value="${esc(setupNames[i] || String.fromCharCode(65 + i))}" maxlength="10">`
   ).join('');
 
+  // 조건문 출처 — 내 조건문이 없으면 「내 조건문」·「섞어서」는 고를 수 없다
+  $('sourceRow').innerHTML = ['preset','custom','mix'].map(s => {
+    const n = s === 'preset' ? PRESETS.length
+            : s === 'custom' ? customPrompts.length
+            : PRESETS.length + customPrompts.length;
+    const off = s !== 'preset' && customPrompts.length === 0;
+    return `<button class="choice" data-src="${s}" aria-pressed="${s === source}" ${off ? 'disabled' : ''}>` +
+           `${SOURCE_LABEL[s]}<small>${n}개</small></button>`;
+  }).join('');
+
+  const total = poolFor().length;
+  const short = total < setupCells;
+  $('poolNote').className = 'pool-note' + (short ? ' warn' : '');
+  $('poolNote').textContent = short
+    ? `${SOURCE_LABEL[source]}이 ${total}개뿐이라 ${setupCells}칸을 채울 수 없습니다. 칸 수를 줄이거나 조건문을 더 만들어 주세요.`
+    : `${SOURCE_LABEL[source]} ${total}개에서 ${setupCells}개를 뽑습니다. 몸풀기가 앞, 몸이 가운데, 다문화가 뒤에 놓입니다.`;
+
+  renderCustomArea();
+  $('btnStart').disabled = short;
   $('btnResume').classList.toggle('hidden', !loadSaved());
 }
+
+function renderCustomArea() {
+  const list = customPrompts.length
+    ? '<div class="prompt-list">' + customPrompts.map(p =>
+        `<div class="prompt-item">
+           <span class="tag">${esc(p.set)}</span>
+           <span class="t">${esc(p.text)}</span>
+           <span class="cnt">답 ${p.answers.length}개</span>
+           <button data-edit="${p.id}">고치기</button>
+           <button class="danger" data-del="${p.id}">삭제</button>
+         </div>`).join('') + '</div>'
+    : '<div class="pool-note">아직 만든 조건문이 없습니다. 만들어 두면 다음 수업에도 그대로 남습니다.</div>';
+
+  const editor = draft ? `
+    <div class="editor">
+      <div class="row">
+        <label for="edText">조건문</label>
+        <input type="text" id="edText" value="${esc(draft.text)}" placeholder="예) 우리가 배운 통일이 되면 좋은 점">
+      </div>
+      <div class="row">
+        <label>세트</label>
+        <div class="choice-row" id="edSetRow">${SET_ORDER.map(s =>
+          `<button class="choice" data-eset="${s}" aria-pressed="${s === draft.set}">${s}</button>`).join('')}</div>
+        <div class="hint">${SET_HELP[draft.set]}</div>
+      </div>
+      <div class="row">
+        <label for="ed30">30점 · 흔한 답 <span style="opacity:.7">(쉼표로 구분)</span></label>
+        <input type="text" id="ed30" value="${esc(draft.a30)}" placeholder="이산가족이 만난다, 전쟁이 없어진다">
+      </div>
+      <div class="row">
+        <label for="ed50">50점 · 웬만한 답</label>
+        <input type="text" id="ed50" value="${esc(draft.a50)}" placeholder="기차로 유럽에 간다">
+      </div>
+      <div class="row">
+        <label for="ed100">100점 · 잘 안 나올 답</label>
+        <input type="text" id="ed100" value="${esc(draft.a100)}" placeholder="군인이 줄어 그 돈을 다른 데 쓴다">
+      </div>
+      <div class="hint">답은 비워 둬도 됩니다. 점수는 그때그때 사회자가 정하면 됩니다.<br>
+        다만 <b>답이 하나뿐인 조건문은 넣지 마세요.</b> 아는 아이만 웃습니다.</div>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="btnEdSave">저장</button>
+        <button class="ghost" id="btnEdCancel">취소</button>
+      </div>
+    </div>`
+    : '<div style="margin-top:14px"><button id="btnEdNew">+ 조건문 만들기</button></div>';
+
+  $('customArea').innerHTML = list + editor;
+}
+
+function openEditor(id) {
+  const p = customPrompts.find(x => x.id === id);
+  if (!p) return;
+  const words = pts => p.answers.filter(a => a.p === pts).map(a => a.word).join(', ');
+  editing = id;
+  draft = { text: p.text, set: p.set, a30: words(30), a50: words(50), a100: words(100) };
+  renderSetup(false);   // 방금 채운 draft를 화면 값으로 덮어쓰지 않는다
+}
+
+function saveEditor() {
+  syncDraft();
+  const text = draft.text.trim();
+  if (!text) { toast('조건문을 입력하세요.'); $('edText').focus(); return; }
+
+  const parse = (s, p) => s.split(',').map(w => w.trim()).filter(Boolean).map(word => ({ word, p }));
+  const answers = [...parse(draft.a30, 30), ...parse(draft.a50, 50), ...parse(draft.a100, 100)];
+
+  if (editing === 'new') {
+    customPrompts.push({ id: 'c' + Date.now() + '-' + customPrompts.length, set: draft.set, text, answers });
+  } else {
+    const p = customPrompts.find(x => x.id === editing);
+    if (p) Object.assign(p, { set: draft.set, text, answers });
+  }
+  saveCustom();
+  draft = null; editing = null;
+  renderSetup();
+  toast(answers.length === 1 ? '저장했습니다. 다만 답이 하나뿐이면 아는 아이만 웃습니다.' : '저장했습니다.');
+}
+
+$('sourceRow').addEventListener('click', e => {
+  const b = e.target.closest('[data-src]');
+  if (!b || b.disabled) return;
+  source = b.dataset.src;
+  renderSetup();
+});
+
+$('customArea').addEventListener('click', e => {
+  if (e.target.closest('#btnEdNew')) {
+    draft = { text: '', set: '몸풀기', a30: '', a50: '', a100: '' };
+    editing = 'new'; renderSetup(false); $('edText').focus(); return;
+  }
+  if (e.target.closest('#btnEdCancel')) { draft = null; editing = null; renderSetup(); return; }
+  if (e.target.closest('#btnEdSave')) { saveEditor(); return; }
+
+  const es = e.target.closest('[data-eset]');
+  if (es) { syncDraft(); draft.set = es.dataset.eset; renderSetup(); return; }
+
+  const ed = e.target.closest('[data-edit]');
+  if (ed) { openEditor(ed.dataset.edit); return; }
+
+  const dl = e.target.closest('[data-del]');
+  if (dl) {
+    const p = customPrompts.find(x => x.id === dl.dataset.del);
+    if (!p || !confirm(`「${p.text}」을(를) 지울까요?`)) return;
+    customPrompts = customPrompts.filter(x => x.id !== dl.dataset.del);
+    saveCustom();
+    if (source !== 'preset' && !customPrompts.length) source = 'preset';
+    if (editing === dl.dataset.del) { draft = null; editing = null; }
+    renderSetup();
+  }
+});
 
 $('teamCountRow').addEventListener('click', e => {
   const b = e.target.closest('[data-tc]');
@@ -719,6 +934,10 @@ function readNames() {
 
 $('btnStart').addEventListener('click', () => {
   readNames();
+  if (poolFor().length < setupCells) {
+    toast(`조건문이 ${setupCells}개 필요합니다. 지금은 ${poolFor().length}개입니다.`);
+    return;
+  }
   const names = Array.from({ length: setupTeamCount }, (_, i) =>
     (setupNames[i] || '').trim() || String.fromCharCode(65 + i));
   state = newState(names, setupCells);
