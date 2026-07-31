@@ -1,0 +1,5 @@
+# Claude Code 로컬 설정 (권한 허용 목록 등) — 개인 환경 파일이라 공유하지 않는다
+.claude/settings.local.json
+
+# macOS
+.DS_Store
